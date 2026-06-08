@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hiệp Sĩ Hoàng Gia - TV Edition</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #1a1a1a;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            user-select: none;
+        }
+        #ui {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+            pointer-events: none;
+        }
+        h1 { margin: 0 0 10px 0; font-size: 24px; color: #ffae19; }
+        p { margin: 5px 0; font-size: 15px; }
+        .skill-badge {
+            display: inline-block;
+            background: rgba(0,0,0,0.6);
+            padding: 3px 8px;
+            border-radius: 4px;
+            border: 1px solid #ffae19;
+            font-weight: bold;
+        }
+        
+        /* Thanh máu của bù nhìn */
+        #hp-container {
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 300px;
+            background: rgba(0,0,0,0.5);
+            padding: 5px;
+            border-radius: 8px;
+            border: 2px solid #333;
+            text-align: center;
+        }
+        #hp-bar {
+            width: 100%;
+            height: 20px;
+            background: #ff3333;
+            border-radius: 4px;
+            transition: width 0.1s ease-out;
+        }
+        #hp-text {
+            position: absolute;
+            width: 100%;
+            top: 5px;
+            left: 0;
+            color: white;
+            font-weight: bold;
+            font-size: 14px;
+            text-shadow: 1px 1px 2px black;
+        }
+        #buff-status {
+            color: #ff4500;
+            font-weight: bold;
+            animation: blink 0.5s infinite alternate;
+            display: none;
+        }
+        @keyframes blink { from { opacity: 0.4; } to { opacity: 1; } }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+    <div id="ui">
+        <h1>Hiệp Sĩ Hoàng Gia (TV Play)</h1>
+        <p><b>Di chuyển:</b> Phím số [8, 4, 2, 6]</p>
+        <p><b>Đánh thường:</b> Phím số [0]</p>
+        <p><span class="skill-badge">Phím 1</span> Lướt Tốc Độ (Hồi: 1.5s)</p>
+        <p><span class="skill-badge">Phím 3</span> Lốc Xoáy Lửa (Hồi: 4s)</p>
+        <p><span class="skill-badge">Phím 5 hoặc E</span> Kiếm Trời Giáng (Hồi: 6s)</p>
+        <p>Số chuỗi đòn đánh: <span id="combo-text" style="color:#ffd166; font-weight:bold;">0/5</span></p>
+        <p id="buff-status">🔥 KIẾM LỬA ĐANG KÍCH HOẠT! 🔥</p>
+    </div>
+
+    <div id="hp-container">
+        <div id="hp-text">BÙ NHÌN LUYỆN TẬP: 1000/1000</div>
+        <div id="hp-bar"></div>
+    </div>
+
+    <script>
+        // --- 1. KHỞI TẠO SCENE & CAMERA ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x223a22);
+
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        document.body.appendChild(renderer.domElement);
+
+        // Ánh sáng
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
+        scene.add(ambientLight);
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        dirLight.position.set(15, 30, 15);
+        dirLight.castShadow = true;
+        scene.add(dirLight);
+
+        // Mặt đất
+        const floorGeo = new THREE.PlaneGeometry(60, 60);
+        const floorMat = new THREE.MeshStandardMaterial({ color: 0x3b5c3e, roughness: 0.9 });
+        const floor = new THREE.Mesh(floorGeo, floorMat);
+        floor.rotation.x = -Math.PI / 2;
+        floor.receiveShadow = true;
+        scene.add(floor);
+
+        // --- 2. QUẢN LÝ TRẠNG THÁI GAME ---
+        let scarecrowHP = 1000;
+        const maxHP = 1000;
+        let hitCount = 0;
+        let isFireBuffActive = false;
+        let fireBuffTimer = 0;
+
+        let isAttacking = false;
+        let attackProgress = 0;
+        
+        // Cooldown kỹ năng
+        let lastQTime = 0;
+        let lastETime = 0;
+        let lastDashTime = 0;
+        const cooldownQ = 4000; 
+        const cooldownE = 6000; 
+        const cooldownDash = 1500; 
+
+        // Trạng thái Lướt (Dash)
+        let isDashing = false;
+        let dashDirection = new THREE.Vector3(0, 0, 1);
+        let dashTimer = 0;
+        const dashDuration = 0.2; 
+        const dashSpeed = 0.5;    
+
+        // Mảng quản lý hạt vật lý và bóng mờ
+        let particles = [];
+        let ghosts = [];
+
+        let currentFacingAngle = 0;
+
+        // --- 3. TẠO NGƯỜI CHƠI & THANH KIẾM ---
+        const playerGroup = new THREE.Group();
+        
+        const bodyGeo = new THREE.CylinderGeometry(0.4, 0.4, 1.2, 16);
+        const bodyMat = new THREE.MeshStandardMaterial({ color: 0x1a365d });
+        const body = new THREE.Mesh(bodyGeo, bodyMat);
+        body.position.y = 0.6; body.castShadow = true; playerGroup.add(body);
+        
+        const head = new THREE.Mesh(new THREE.SphereGeometry(0.3, 16, 16), new THREE.MeshStandardMaterial({ color: 0xffd166 }));
+        head.position.y = 1.35; head.castShadow = true; playerGroup.add(head);
+
+        const swordGroup = new THREE.Group();
+        const blade = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.1, 0.03), new THREE.MeshStandardMaterial({ color: 0xdddddd, metalness: 0.9, roughness: 0.1 }));
+        blade.position.y = 0.55; blade.castShadow = true; swordGroup.add(blade);
+
+        const guard = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.05, 0.08), new THREE.MeshStandardMaterial({ color: 0xd4af37, metalness: 0.8, roughness: 0.2 }));
+        guard.position.y = 0.05; swordGroup.add(guard);
+
+        const hilt = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.2, 8), new THREE.MeshStandardMaterial({ color: 0x4a2e1b }));
+        hilt.position.y = -0.08; swordGroup.add(hilt);
+
+        const swordFire = new THREE.Mesh(new THREE.BoxGeometry(0.12, 1.15, 0.06), new THREE.MeshBasicMaterial({ color: 0xff4500, transparent: true, opacity: 0.5, wireframe: true }));
+        swordFire.position.y = 0.55; swordFire.visible = false; swordGroup.add(swordFire);
+
+        swordGroup.position.set(0.5, 0.5, 0.2);
+        playerGroup.add(swordGroup);
+        scene.add(playerGroup);
+        playerGroup.position.set(-2, 0, 0);
+
+        // --- 4. TẠO BÙ NHÌN ---
+        const scarecrowGroup = new THREE.Group();
+        const woodMat = new THREE.MeshStandardMaterial({ color: 0x5c4033 });
+        
+        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 1.8, 8), woodMat);
+        post.position.y = 0.9; post.castShadow = true; scarecrowGroup.add(post);
+
+        const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 1.5, 8), woodMat);
+        arm.rotation.z = Math.PI / 2; arm.position.y = 1.3; arm.castShadow = true; scarecrowGroup.add(arm);
+
+        const strawHead = new THREE.Mesh(new THREE.ConeGeometry(0.4, 0.6, 8), new THREE.MeshStandardMaterial({ color: 0xdcb13c }));
+        strawHead.position.y = 1.9; strawHead.castShadow = true; scarecrowGroup.add(strawHead);
+
+        scene.add(scarecrowGroup);
+        scarecrowGroup.position.set(2, 0, 0);
+
+        // --- 5. HỆ THỐNG ĐIỀU KHIỂN SỐ (MAP PHÍM MỚI) ---
+        // Bản đồ nhận diện cả phím số thường và phím số bên Numpad
+        const keys = {
+            '8': false, 'Numpad8': false, // Lên
+            '2': false, 'Numpad2': false, // Xuống
+            '4': false, 'Numpad4': false, // Trái
+            '6': false, 'Numpad6': false  // Phải
+        };
+        
+        window.addEventListener('keydown', (e) => {
+            // Đăng ký trạng thái giữ nút di chuyển
+            if (e.key in keys) keys[e.key] = true;
+            if (e.code in keys) keys[e.code] = true;
+
+            // Xử lý nút Đánh thường: Phím 0
+            if ((e.key === '0' || e.code === 'Numpad0') && !isAttacking && !isDashing) {
+                isAttacking = true;
+                attackProgress = 0;
+                
+                let damage = isFireBuffActive ? 40 : 20;
+                let hit = checkHitDistance(1.8);
+                
+                if (hit) {
+                    dealDamage(damage);
+                    if (!isFireBuffActive) {
+                        hitCount++;
+                        if (hitCount >= 5) activateFireSword();
+                    }
+                }
+                updateUI();
+            }
+
+            // Xử lý các Kỹ năng
+            if (e.key === '1' || e.code === 'Numpad1') castDash();      // Phím 1: Lướt
+            if (e.key === '3' || e.code === 'Numpad3') castTornado();   // Phím 3: Lốc xoáy
+            if (e.key === '5' || e.code === 'Numpad5' || e.key.toLowerCase() === 'e') castSwordRain(); // Phím 5 hoặc E: Thiên kiếm
+        });
+
+        window.addEventListener('keyup', (e) => {
+            if (e.key in keys) keys[e.key] = false;
+            if (e.code in keys) keys[e.code] = false;
+        });
+
+        // --- 6. LOGIC CHIÊU THỨC & TƯƠNG TÁC ---
+        function checkHitDistance(range) {
+            return playerGroup.position.distanceTo(scarecrowGroup.position) <= range;
+        }
+
+        function dealDamage(amount) {
+            scarecrowHP = Math.max(0, scarecrowHP - amount);
+            const hpPercent = (scarecrowHP / maxHP) * 100;
+            document.getElementById('hp-bar').style.width = hpPercent + '%';
+            document.getElementById('hp-text').innerText = `BÙ NHÌN LUYỆN TẬP: ${scarecrowHP}/${maxHP}`;
+
+            scarecrowGroup.rotation.z = 0.25;
+            setTimeout(() => scarecrowGroup.rotation.z = -0.2, 80);
+            setTimeout(() => scarecrowGroup.rotation.z = 0, 160);
+
+            createSparks(scarecrowGroup.position, isFireBuffActive ? 0xff4500 : 0xdddddd);
+
+            if (scarecrowHP <= 0) {
+                setTimeout(() => { scarecrowHP = maxHP; dealDamage(0); }, 1000);
+            }
+        }
+
+        function activateFireSword() {
+            isFireBuffActive = true;
+            fireBuffTimer = 10;
+            swordFire.visible = true;
+            document.getElementById('buff-status').style.display = 'block';
+        }
+
+        function updateUI() {
+            document.getElementById('combo-text').innerText = isFireBuffActive ? "ĐANG CUỒNG NỘ" : `${hitCount}/5`;
+        }
+
+        // Kỹ năng 3: Lốc Xoáy Lửa
+        function castTornado() {
+            const now = Date.now();
+            if (now - lastQTime < cooldownQ) return;
+            lastQTime = now;
+
+            const tornadoGeo = new THREE.CylinderGeometry(1.5, 0.2, 2, 16, 1, true);
+            const tornadoMat = new THREE.MeshBasicMaterial({ color: 0xff6600, wireframe: true, transparent: true, opacity: 0.6 });
+            const tornado = new THREE.Mesh(tornadoGeo, tornadoMat);
+            tornado.position.copy(playerGroup.position);
+            tornado.position.y = 1;
+            scene.add(tornado);
+
+            let ticks = 0;
+            const interval = setInterval(() => {
+                tornado.position.copy(playerGroup.position);
+                tornado.rotation.y += 0.5;
+                if (checkHitDistance(2.2)) dealDamage(25);
+                ticks++;
+                if (ticks > 15) { clearInterval(interval); scene.remove(tornado); }
+            }, 100);
+        }
+
+        // Kỹ năng Kiếm Trời Giáng
+        function castSwordRain() {
+            const now = Date.now();
+            if (now - lastETime < cooldownE) return;
+            lastETime = now;
+
+            const giantSword = new THREE.Group();
+            const gBlade = new THREE.Mesh(new THREE.BoxGeometry(0.3, 3, 0.1), new THREE.MeshStandardMaterial({ color: 0xff3300, emissive: 0x551100 }));
+            gBlade.position.y = 1.5;
+            giantSword.add(gBlade);
+            
+            giantSword.position.copy(scarecrowGroup.position);
+            giantSword.position.y = 15;
+            scene.add(giantSword);
+
+            let fallSpeed = 0.6;
+            function dropAnim() {
+                giantSword.position.y -= fallSpeed;
+                if (giantSword.position.y <= 0) {
+                    giantSword.position.y = 0;
+                    dealDamage(150);
+                    createSparks(scarecrowGroup.position, 0xff3300, 40);
+                    setTimeout(() => { scene.remove(giantSword); }, 600);
+                } else {
+                    requestAnimationFrame(dropAnim);
+                }
+            }
+            dropAnim();
+        }
+
+        // Kỹ năng 1: LƯỚT (DASH)
+        function castDash() {
+            const now = Date.now();
+            if (now - lastDashTime < cooldownDash || isDashing) return;
+            lastDashTime = now;
+
+            isDashing = true;
+            dashTimer = dashDuration;
+
+            let moveX = 0; let moveZ = 0;
+            if (keys['8'] || keys['Numpad8']) moveZ -= 1;
+            if (keys['2'] || keys['Numpad2']) moveZ += 1;
+            if (keys['4'] || keys['Numpad4']) moveX -= 1;
+            if (keys['6'] || keys['Numpad6']) moveX += 1;
+
+            if (moveX !== 0 || moveZ !== 0) {
+                dashDirection.set(moveX, 0, moveZ).normalize();
+            } else {
+                dashDirection.set(Math.sin(currentFacingAngle), 0, Math.cos(currentFacingAngle)).normalize();
+            }
+        }
+
+        function createGhostEffect() {
+            const ghostGeo = new THREE.CylinderGeometry(0.4, 0.4, 1.2, 8);
+            const ghostMat = new THREE.MeshBasicMaterial({ color: 0x00aaff, transparent: true, opacity: 0.4 });
+            const ghost = new THREE.Mesh(ghostGeo, ghostMat);
+            ghost.position.copy(playerGroup.position);
+            ghost.position.y += 0.6;
+            ghosts.push(ghost);
+            scene.add(ghost);
+        }
+
+        function createSparks(pos, colorHex, count = 10) {
+            for (let i = 0; i < count; i++) {
+                const p = new THREE.Mesh(new THREE.SphereGeometry(0.06, 4, 4), new THREE.MeshBasicMaterial({ color: colorHex }));
+                p.position.copy(pos);
+                p.position.y += 0.5 + Math.random();
+                p.userData = {
+                    vx: (Math.random() - 0.5) * 0.2,
+                    vy: Math.random() * 0.2,
+                    vz: (Math.random() - 0.5) * 0.2,
+                    life: 20
+                };
+                scene.add(p);
+                particles.push(p);
+            }
+        }
+
+        // --- 7. VÒNG LẶP CHÍNH (GAME LOOP) ---
+        const moveSpeed = 0.09;
+        const clock = new THREE.Clock();
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const dt = clock.getDelta();
+
+            if (isFireBuffActive) {
+                fireBuffTimer -= dt;
+                swordFire.material.color.setHex(Math.random() > 0.5 ? 0xff4500 : 0xffaa00);
+                if (fireBuffTimer <= 0) {
+                    isFireBuffActive = false;
+                    hitCount = 0;
+                    swordFire.visible = false;
+                    document.getElementById('buff-status').style.none = 'none';
+                    updateUI();
+                }
+            }
+
+            // XỬ LÝ DI CHUYỂN HOẶC LƯỚT BẰNG PHÍM SỐ
+            if (isDashing) {
+                playerGroup.position.addScaledVector(dashDirection, dashSpeed);
+                if (Math.random() > 0.3) createGhostEffect();
+                dashTimer -= dt;
+                if (dashTimer <= 0) isDashing = false;
+            } else {
+                let moveX = 0; let moveZ = 0;
+                if (keys['8'] || keys['Numpad8']) moveZ -= 1;
+                if (keys['2'] || keys['Numpad2']) moveZ += 1;
+                if (keys['4'] || keys['Numpad4']) moveX -= 1;
+                if (keys['6'] || keys['Numpad6']) moveX += 1;
+
+                if (moveX !== 0 || moveZ !== 0) {
+                    const length = Math.sqrt(moveX * moveX + moveZ * moveZ);
+                    playerGroup.position.x += (moveX / length) * moveSpeed;
+                    playerGroup.position.z += (moveZ / length) * moveSpeed;
+
+                    currentFacingAngle = Math.atan2(moveX, moveZ);
+                    playerGroup.rotation.y = currentFacingAngle;
+                    
+                    playerGroup.position.y = Math.abs(Math.sin(clock.getElapsedTime() * 12)) * 0.12;
+                } else {
+                    playerGroup.position.y = 0;
+                }
+            }
+
+            // Xử lý bóng mờ
+            for (let i = ghosts.length - 1; i >= 0; i--) {
+                const g = ghosts[i];
+                g.material.opacity -= 0.05;
+                if (g.material.opacity <= 0) {
+                    scene.remove(g);
+                    ghosts.splice(i, 1);
+                }
+            }
+
+            // Hoạt ảnh vung kiếm thường
+            if (isAttacking) {
+                attackProgress += 0.25;
+                swordGroup.rotation.x = Math.sin(attackProgress) * 1.6;
+                swordGroup.rotation.y = Math.sin(attackProgress) * 0.5;
+                if (attackProgress >= Math.PI) {
+                    isAttacking = false;
+                    swordGroup.rotation.set(0, 0, 0);
+                }
+            }
+
+            // Cập nhật các hạt vật lý
+            for (let i = particles.length - 1; i >= 0; i--) {
+                const p = particles[i];
+                p.position.x += p.userData.vx; p.position.y += p.userData.vy; p.position.z += p.userData.vz;
+                p.userData.vy -= 0.01; p.userData.life--;
+                if (p.userData.life <= 0) { scene.remove(p); particles.splice(i, 1); }
+            }
+
+            // Camera góc nhìn thứ ba
+            camera.position.x = playerGroup.position.x;
+            camera.position.y = playerGroup.position.y + 6.5;
+            camera.position.z = playerGroup.position.z + 6.5;
+            camera.lookAt(playerGroup.position);
+
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        animate();
+    </script>
+</body>
+</html>
